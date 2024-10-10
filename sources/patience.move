@@ -1,4 +1,6 @@
 module patience::patience {
+    // === Imports ===
+
     use patience::icon;
     
     use sui::balance::{Self, Balance};
@@ -8,15 +10,23 @@ module patience::patience {
     use sui::random::{Self, Random};
     use sui::sui::SUI;
 
+    // === Errors ===
+
     const E_COOLDOWN: u64 = 1;
     const E_INSUFFICIENT_FEE: u64 = 2;
+    const E_MINING_PAUSED: u64 = 3;
     
+    // === Structs ===
+
+    /// One Time Witness
     public struct PATIENCE has drop {}
 
+    /// Admin Cap for managing the director.
     public struct AdminCap has key {
         id: UID,
     }
 
+    /// Shared object to coorinate mining and mint coins.
     public struct Director has store, key {
         id: UID,
         tcap: TreasuryCap<PATIENCE>,
@@ -30,8 +40,10 @@ module patience::patience {
         scale_min: u64,
         scale_max: u64,
         cooldown: u64,
+        paused: bool,
     }
 
+    /// Claim event emitted on claim.
     public struct ClaimEvent has copy, drop {
         claimer: address,
         timestamp: u64,
@@ -39,6 +51,9 @@ module patience::patience {
         scale: u64,
     }
 
+    // === Init Function ===
+
+    /// Initialise currency, admin cap, and director.
     fun init(otw: PATIENCE, ctx: &mut TxContext) {
         // Create admin cap
         let admin_cap = AdminCap {
@@ -47,7 +62,15 @@ module patience::patience {
         transfer::transfer<AdminCap>(admin_cap, ctx.sender());
         
         // Create currency
-        let (treasury, metadata) = coin::create_currency(otw, 9, b"PATIENCE", b"Patience", b"The Proof of Patience Coin", option::some(icon::get_icon_url()), ctx);
+        let (treasury, metadata) = coin::create_currency(
+            otw, 
+            9, 
+            b"PATIENCE", 
+            b"Patience", 
+            b"The Proof of Patience Coin", 
+            option::some(icon::get_icon_url()), 
+            ctx
+        );
         transfer::public_freeze_object(metadata);
 
         // Create director
@@ -59,16 +82,26 @@ module patience::patience {
             scale: 0,
 
             // Settings
-            claim_fee: 200_000_000,
+            claim_fee: 100_000_000,
             claim_cap: 50_000_000_000,
             scale_min: 1158, // 12 hours
             scale_max: 13888, // 1 hour
             cooldown: 30000, // 30 second
+            paused: false,
         };
         transfer::share_object(director);
     }
     
+    // === Public Function ===
+    
+    /// Claim function for public to claim the pot of PATIENCE
+    /// Can't claim if paused
+    /// Can't claim if in cooldown
+    /// Can't claim if fee provided is not greater or equal to director fee
+    /// This function uses the directors treasury cap to mint new PATIENCE
     entry fun claim(director: &mut Director, fee: Coin<SUI>, clock: &Clock, r: &Random, ctx: &mut TxContext) {
+        // Check if paused
+        assert!(director.paused == false, E_MINING_PAUSED);
         let mut generator = random::new_generator(r, ctx);
 
         // Check cooldown
@@ -108,6 +141,8 @@ module patience::patience {
         emit_claim_event(clock.timestamp_ms(), mint_amount, director.scale, ctx.sender());
     }
 
+    // === Private Functions ===
+
     fun emit_claim_event(timestamp: u64, amount: u64, scale: u64, claimer: address) {
         let event = ClaimEvent {
             claimer,
@@ -119,43 +154,64 @@ module patience::patience {
         event::emit(event);
     }
 
+    // === Admin Functions ===
+
+    /// Withdraw fees from director
     public fun withdraw_fee(director: &mut Director, _admin_cap: &mut AdminCap, ctx: &mut TxContext): Coin<SUI> {
         let value = director.fee_balance.value();
         coin::from_balance(director.fee_balance.split(value), ctx)
     }
 
+    /// Transfer admin capability
     public fun admin_transfer(admin_cap: AdminCap, recipient: address) {
         transfer::transfer(admin_cap, recipient);
     }
 
+    /// Destroy admin capability
     public fun admin_destroy(admin_cap: AdminCap) {
         let AdminCap { id: id } = admin_cap;
         object::delete(id);
     }
 
-    public fun set_claim_fee(fee: u64, director: &mut Director, _admin_cap: &mut AdminCap) {
+    /// Pause mining
+    public fun admin_pause(director:&mut Director, _: &AdminCap) {
+        director.paused = true;
+    }
+
+    /// Resume mining
+    public fun admin_resume(director:&mut Director, _: &AdminCap) {
+        director.paused = false;
+    }
+
+    /// Change claim fee settings
+    public fun set_claim_fee(fee: u64, director: &mut Director, _: &AdminCap) {
         director.claim_fee = fee;
     }
 
-    public fun set_claim_cap(cap: u64, director: &mut Director, _admin_cap: &mut AdminCap) {
+    /// Change claim cap settings
+    public fun set_claim_cap(cap: u64, director: &mut Director, _: &AdminCap) {
         director.claim_cap = cap;
     }
 
-    public fun set_scale_min(min: u64, director: &mut Director, _admin_cap: &mut AdminCap) {
+    /// Change scale min settings
+    public fun set_scale_min(min: u64, director: &mut Director, _: &AdminCap) {
         director.scale_min = min;
     }
 
-    public fun set_scale_max(max: u64, director: &mut Director, _admin_cap: &mut AdminCap) {
+    /// Change scale max settings
+    public fun set_scale_max(max: u64, director: &mut Director, _: &AdminCap) {
         director.scale_max = max;
     }
     
-    public fun set_cooldown(cooldown: u64, director: &mut Director, _admin_cap: &mut AdminCap) {
+    /// Change cooldown settings
+    public fun set_cooldown(cooldown: u64, director: &mut Director, _: &AdminCap) {
         director.cooldown = cooldown;
     }
 
+    // === Test Functions ===
+
     #[test_only]
-    /// Wrapper of module initializer for testing
-    public fun test_init(ctx: &mut TxContext) {
-        init(PATIENCE {}, ctx)
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(PATIENCE {}, ctx);
     }
 }
